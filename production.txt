@@ -1,0 +1,148 @@
+#include <SPI.h>
+#include <Ethernet.h>
+#include <PubSubClient.h>
+
+// Unique MAC address for each device
+byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x5}; // Change the last byte for each device
+
+// Unique static IP address for each device
+IPAddress ip(192, 168, 110, 15); // Change the last byte for each device
+
+// MQTT Broker settings
+const char* mqtt_server = "192.168.1.12"; // Replace with your MQTT broker IP
+const int mqtt_port = 1883;
+
+EthernetClient ethClient;
+PubSubClient client(ethClient);
+
+// Pin definitions for shift register
+#define DATA_PIN D0   // Data pin connected to the shift register (DS)
+#define LATCH_PIN D2   // Latch pin connected to the shift register (ST_CP)
+#define CLOCK_PIN D3   // Clock pin connected to the shift register (SH_CP)
+
+// Digit codes for the 7-segment display
+const byte digitCodes[] = {
+  0b00111111, // 0
+  0b00000110, // 1
+  0b01011011, // 2
+  0b01001111, // 3
+  0b01100110, // 4
+  0b01101101, // 5
+  0b01111101, // 6
+  0b00000111, // 7
+  0b01111111, // 8
+  0b01101111  // 9
+};
+
+// Time tracking for MQTT subscription
+unsigned long lastSubscribeTime = 0;
+const unsigned long subscribeInterval = 30 * 60 * 1000; // 30 minutes in milliseconds
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  
+  String message;
+  for (unsigned int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+    message += (char)payload[i];
+  }
+  Serial.println();
+
+  // Convert the message to an integer
+  if (message.length() == 4) {
+    for (int i = 0; i < 4; i++) {
+      int digit = message.charAt(i) - '0';
+      if (digit >= 0 && digit <= 9) {
+        Serial.print("Displaying digit: ");
+        Serial.println(digit);
+        updateShiftRegister(digitCodes[digit]);
+      }
+    }
+  }
+
+  // Update the last subscription time
+  lastSubscribeTime = millis();
+}
+
+void SaveEnergy() {
+  for (int i = 0; i < 4; i++) {
+    updateShiftRegister(0b01000000);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize shift register pins
+  pinMode(DATA_PIN, OUTPUT);
+  pinMode(LATCH_PIN, OUTPUT);
+  pinMode(CLOCK_PIN, OUTPUT);
+
+  // Initialize Ethernet with static MAC and IP
+  Ethernet.init(5);
+  SaveEnergy();
+
+  Serial.println("Initializing Ethernet...");
+  Ethernet.begin(mac, ip);
+
+  // Give the Ethernet shield a second to initialize
+  delay(1000);
+
+  // Print local IP address
+  Serial.print("IP Address: ");
+  Serial.println(Ethernet.localIP());
+
+  // Setup MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+
+  // Initialize lastSubscribeTime
+  lastSubscribeTime = millis();
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  // Check if 25 minutes have passed since the last subscription
+  if (millis() - lastSubscribeTime > subscribeInterval) {
+    SaveEnergy();
+    lastSubscribeTime = millis(); // Reset the timer to avoid repeated SaveEnergy calls
+  }
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("screen4")) {
+      Serial.println("connected");
+
+      // Once connected, publish an announcement...
+      // client.publish("test/topic", "Hello world");
+      // ... and resubscribe
+      client.subscribe("display/screen4");
+
+      // Update the last subscription time
+      lastSubscribeTime = millis();
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait before retrying
+      delay(5000);
+    }
+  }
+}
+
+void updateShiftRegister(uint8_t data) {
+  // Update shift register with new data
+  digitalWrite(LATCH_PIN, LOW);
+  shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, data);
+  digitalWrite(LATCH_PIN, HIGH);
+}
